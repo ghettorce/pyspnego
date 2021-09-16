@@ -17,12 +17,7 @@ from spnego.exceptions import (
     OperationNotAvailableError,
     SpnegoError,
 )
-from spnego.tls import (
-    CredSSPTLSContext,
-    default_tls_context,
-    generate_tls_certificate,
-    get_certificate_public_key,
-)
+from spnego.tls import default_tls_context
 
 
 @pytest.mark.parametrize('expected, usage, nonce', [

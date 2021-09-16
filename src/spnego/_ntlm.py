@@ -17,6 +17,13 @@ from spnego._context import (
     WrapResult,
     split_username,
 )
+from spnego._credential import (
+    Credential,
+    CredentialCache,
+    NTLMHash,
+    Password,
+    unify_credentials,
+)
 from spnego._ntlm_raw.crypto import (
     RC4Handle,
     compute_response_v1,
@@ -191,18 +198,25 @@ class _NTLMCredential:
 
     def __init__(
         self,
-        domain: typing.Optional[str] = None,
-        username: typing.Optional[str] = None,
-        password: typing.Optional[str] = None,
+        credential: typing.Optional[typing.Union[CredentialCache, NTLMHash, Password]] = None,
     ) -> None:
-        if password:
-            self.domain = domain
-            self.username = username
-            self.lm_hash = lmowfv1(password)
-            self.nt_hash = ntowfv1(password)
+        if isinstance(credential, Password):
             self._store = 'explicit'
+            self.domain, self.username = split_username(credential.username)
+            self.lm_hash = lmowfv1(credential.password)
+            self.nt_hash = ntowfv1(credential.password)
+
+        elif isinstance(credential, NTLMHash):
+            self._store = 'explicit'
+            self.domain, self.username = split_username(credential.username)
+            self.lm_hash = base64.b16decode(credential.lm_hash.upper()) if credential.lm_hash else b"\x00" * 16
+            self.nt_hash = base64.b16decode(credential.nt_hash.upper()) if credential.nt_hash else b"\x00" * 16
 
         else:
+            domain = username = None
+            if isinstance(credential, CredentialCache):
+                domain, username = split_username(credential.username)
+
             self._store = _get_credential_file()
             self.domain, self.username, self.lm_hash, self.nt_hash = _get_credential(self._store, domain, username)
 
@@ -215,8 +229,8 @@ class NTLMProxy(ContextProxy):
 
     def __init__(
         self,
-        username: str,
-        password: str,
+        username: typing.Optional[typing.Union[str, Credential, typing.List[Credential]]] = None,
+        password: typing.Optional[str] = None,
         hostname: typing.Optional[str] = None,
         service: typing.Optional[str] = None,
         channel_bindings: typing.Optional[GssChannelBindings] = None,
@@ -224,11 +238,11 @@ class NTLMProxy(ContextProxy):
         usage: str = 'initiate',
         protocol: str = 'ntlm',
         options: NegotiateOptions = NegotiateOptions.none,
-        _is_wrapped: bool = False,
         **kwargs: typing.Any,
     ) -> None:
-        super(NTLMProxy, self).__init__(username, password, hostname, service, channel_bindings, context_req, usage,
-                                        protocol, options, _is_wrapped)
+        credentials = unify_credentials(username, password, required_protocol="ntlm")
+        super(NTLMProxy, self).__init__(credentials, hostname, service, channel_bindings, context_req, usage,
+                                        protocol, options)
 
         self._complete = False
         self._credential: typing.Optional[_NTLMCredential] = None
@@ -260,8 +274,7 @@ class NTLMProxy(ContextProxy):
             self._context_req &= ~NegotiateFlags.extended_session_security
 
         if self.usage == 'initiate':
-            domain, user = split_username(self.username)
-            self._credential = _NTLMCredential(domain=domain, username=user, password=self.password)
+            self._credential = _NTLMCredential(next(c for c in credentials if 'ntlm' in c.supported_protocols))
 
             self._lm = lm_compat_level < 2
             self._nt_v1 = lm_compat_level < 3
@@ -447,7 +460,10 @@ class NTLMProxy(ContextProxy):
                                                                       auth.lm_challenge_response == b"\x00")):
             raise OperationNotAvailableError(context_msg="Anonymous user authentication not implemented")
 
-        self._credential = _NTLMCredential(domain=auth.domain_name, username=auth.user_name)
+        username = auth.user_name
+        if auth.domain_name:
+            username = f"{auth.domain_name}\\{username}"
+        self._credential = _NTLMCredential(CredentialCache(username=username))
         expected_mic = None
 
         if auth.nt_challenge_response and len(auth.nt_challenge_response) > 24:

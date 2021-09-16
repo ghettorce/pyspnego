@@ -2,7 +2,18 @@
 
 ## 0.4.0 - TBD
 
+### Features
+
 * Add `usage` argument for `tls.default_tls_context` to control whether the context is for a initiator or acceptor
+* Added support for custom credential types
+  * Can be used to for things like NTLM authentication with NT/LM hashes, Kerberos with a keytab or from an explicit CCache, etc
+* Support calling SSPI through `pyspnego`'s Negotiate proxy context
+  * This allows users on Windows to still use Negotiate auth but with a complex set of credentials
+  * Also opens up the ability to use Negotiate but only with Kerberos auth
+
+### Deprecations
+
+* The `username` and `password` property on the auth context object are deprecated and will return `None` until it is removed in a future release
 
 
 ## 0.3.1 - 2021-10-29

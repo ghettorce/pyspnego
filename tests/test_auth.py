@@ -327,6 +327,39 @@ def test_negotiate_with_raw_ntlm(ntlm_cred):
     _message_test(c, s)
 
 
+def test_negotiate_with_ntlm_hash(ntlm_cred):
+    cred = spnego.NTLMHash(username=ntlm_cred[0], nt_hash=ntowfv1(ntlm_cred[1]).hex())
+    c = spnego.client(cred, hostname=socket.gethostname())
+    s = spnego.server()
+
+    negotiate = c.step()
+    assert b"NTLMSSP\x00\x01" in negotiate
+    assert not c.complete
+    assert not s.complete
+
+    challenge = s.step(negotiate)
+    assert b"NTLMSSP\x00\x02" in challenge
+    assert not c.complete
+    assert not s.complete
+
+    authenticate = c.step(challenge)
+    assert b"NTLMSSP\x00\x03" in authenticate
+    assert not c.complete
+    assert not s.complete
+
+    mic = s.step(authenticate)
+    assert mic is not None
+    assert not c.complete
+    assert s.complete
+
+    final = c.step(mic)
+    assert final is None
+    assert c.complete
+    assert s.complete
+
+    _message_test(c, s)
+
+
 def test_negotiate_with_ntlm_and_duplicate_response_token(ntlm_cred):
     c = spnego.client(ntlm_cred[0], ntlm_cred[1], hostname=socket.gethostname(),
                       options=spnego.NegotiateOptions.use_negotiate)
@@ -378,6 +411,12 @@ def test_ntlm_auth(lm_compat_level, ntlm_cred, monkeypatch):
 
     assert c.client_principal is None
     assert s.client_principal == ntlm_cred[0]
+
+    with pytest.warns(DeprecationWarning, match="username is deprecated"):
+        c.username
+
+    with pytest.warns(DeprecationWarning, match="password is deprecated"):
+        c.password
 
     _message_test(c, s)
 
@@ -441,6 +480,23 @@ def test_gssapi_ntlm_auth(client_opt, server_opt, ntlm_cred, cbt):
 
     c = spnego.client(ntlm_cred[0], ntlm_cred[1], options=client_opt, **kwargs)
     s = spnego.server(options=server_opt, **kwargs)
+
+    # gss-ntlmssp version on CI may be too old to test the session key
+    test_session_key = 'ntlm' in spnego._gss.GSSAPIProxy.available_protocols(spnego.NegotiateOptions.session_key)
+    _ntlm_test(c, s, test_session_key=test_session_key)
+
+    assert c.client_principal is None
+    assert s.client_principal == ntlm_cred[0]
+
+    _message_test(c, s)
+
+
+@pytest.mark.skipif('ntlm' not in spnego._gss.GSSAPIProxy.available_protocols(),
+                    reason='Test requires NTLM to be available through GSSAPI')
+def test_gssapi_ntlm_auth_with_hash(ntlm_cred):
+    cred = spnego.NTLMHash(username=ntlm_cred[0], nt_hash=ntowfv1(ntlm_cred[1]).hex())
+    c = spnego.client(cred, protocol="ntlm")
+    s = spnego.server(protocol="ntlm", options=spnego.NegotiateOptions.use_ntlm)
 
     # gss-ntlmssp version on CI may be too old to test the session key
     test_session_key = 'ntlm' in spnego._gss.GSSAPIProxy.available_protocols(spnego.NegotiateOptions.session_key)
@@ -534,6 +590,7 @@ def test_ntlm_with_explicit_ntlm_hash(ntlm_cred):
 
 @pytest.mark.parametrize('explicit_user', [False, True])
 def test_gssapi_kerberos_auth(explicit_user, kerb_cred):
+    explicit_user = True
     if kerb_cred.provider == "heimdal":
         pytest.skip("Environment problem with Heimdal - skip")
 
@@ -541,7 +598,7 @@ def test_gssapi_kerberos_auth(explicit_user, kerb_cred):
     if explicit_user:
         username = kerb_cred.user_princ
 
-    c = spnego.client(username, None, hostname=socket.getfqdn(), protocol='kerberos',
+    c = spnego.client(username, None, hostname=kerb_cred.hostname, protocol='kerberos',
                       options=spnego.NegotiateOptions.use_gssapi)
     s = spnego.server(options=spnego.NegotiateOptions.use_gssapi, protocol='kerberos')
 
@@ -629,6 +686,148 @@ def test_gssapi_kerberos_auth_explicit_cred(acquire_cred_from, kerb_cred, monkey
 
     assert c.context_attr & spnego.ContextReq.delegate
     assert s.context_attr & spnego.ContextReq.delegate
+
+    _message_test(c, s)
+
+
+@pytest.mark.parametrize("protocol", ["kerberos", "negotiate"])
+def test_kerberos_auth_keytab(protocol, kerb_cred):
+    if kerb_cred.provider == "heimdal":
+        pytest.skip("Environment problem with Heimdal - skip")
+
+    kerb_cred.extract_keytab(kerb_cred.user_princ, kerb_cred.client_keytab)
+    context_req = spnego.ContextReq.default
+    kt = spnego.KerberosKeytab(principal=kerb_cred.user_princ, keytab=kerb_cred.client_keytab)
+    c = spnego.client(kt, hostname=socket.getfqdn(), protocol=protocol, context_req=context_req)
+    s = spnego.server(protocol=protocol)
+
+    assert not c.complete
+    assert not s.complete
+    assert s.negotiated_protocol is None
+
+    token1 = c.step()
+    assert isinstance(token1, bytes)
+    assert not c.complete
+    assert not s.complete
+    assert s.negotiated_protocol is None
+
+    token2 = s.step(token1)
+    assert isinstance(token2, bytes)
+    assert not c.complete
+    assert s.complete
+    assert s.negotiated_protocol == 'kerberos'
+
+    token3 = c.step(token2)
+    assert token3 is None
+    assert c.complete
+    assert s.complete
+    assert isinstance(c.session_key, bytes)
+    assert isinstance(s.session_key, bytes)
+    assert c.session_key == s.session_key
+
+    assert c.client_principal is None
+    assert s.client_principal == kerb_cred.user_princ
+
+    _message_test(c, s)
+
+
+@pytest.mark.parametrize("protocol, explicit_user", [
+    ("kerberos", False),
+    ("kerberos", True),
+    ("negotiate", False),
+    ("kerberos", True),
+])
+def test_kerberos_auth_ccache(protocol, explicit_user, kerb_cred, monkeypatch):
+    if kerb_cred.provider == "heimdal":
+        pytest.skip("Environment problem with Heimdal - skip")
+
+    # Verified we are actually using our explicit CCache
+    monkeypatch.setenv("KRB5CCNAME", "missing")
+
+    context_req = spnego.ContextReq.default
+
+    if explicit_user:
+        ccache = spnego.KerberosCCache(ccache=kerb_cred.ccache, principal=kerb_cred.user_princ)
+    else:
+        ccache = spnego.KerberosCCache(ccache=kerb_cred.ccache)
+
+    c = spnego.client(ccache, hostname=socket.getfqdn(), protocol=protocol, context_req=context_req)
+    s = spnego.server(protocol=protocol)
+
+    assert not c.complete
+    assert not s.complete
+    assert s.negotiated_protocol is None
+
+    token1 = c.step()
+    assert isinstance(token1, bytes)
+    assert not c.complete
+    assert not s.complete
+    assert s.negotiated_protocol is None
+
+    token2 = s.step(token1)
+    assert isinstance(token2, bytes)
+    assert not c.complete
+    assert s.complete
+    assert s.negotiated_protocol == 'kerberos'
+
+    token3 = c.step(token2)
+    assert token3 is None
+    assert c.complete
+    assert s.complete
+    assert isinstance(c.session_key, bytes)
+    assert isinstance(s.session_key, bytes)
+    assert c.session_key == s.session_key
+
+    assert c.client_principal is None
+    assert s.client_principal == kerb_cred.user_princ
+
+    _message_test(c, s)
+
+
+@pytest.mark.parametrize("protocol, explicit_user", [
+    ("kerberos", False),
+    ("kerberos", True),
+    ("negotiate", False),
+    ("kerberos", True),
+])
+def test_kerberos_auth_env_cache(protocol, explicit_user, kerb_cred):
+    if kerb_cred.provider == "heimdal":
+        pytest.skip("Environment problem with Heimdal - skip")
+
+    context_req = spnego.ContextReq.default
+    cred = None
+    if explicit_user:
+        cred = spnego.CredentialCache(username=kerb_cred.user_princ)
+
+    c = spnego.client(cred, hostname=socket.getfqdn(), protocol=protocol, context_req=context_req)
+    s = spnego.server(protocol=protocol)
+
+    assert not c.complete
+    assert not s.complete
+    assert s.negotiated_protocol is None
+
+    token1 = c.step()
+    assert isinstance(token1, bytes)
+    assert not c.complete
+    assert not s.complete
+    assert s.negotiated_protocol is None
+
+    token2 = s.step(token1)
+    assert isinstance(token2, bytes)
+    assert not c.complete
+    assert s.complete
+    assert s.negotiated_protocol == 'kerberos'
+
+    token3 = c.step(token2)
+    assert token3 is None
+    assert c.complete
+    assert s.complete
+    assert isinstance(c.session_key, bytes)
+    assert isinstance(s.session_key, bytes)
+    assert c.session_key == s.session_key
+
+    assert c.client_principal is None
+    assert s.client_principal == kerb_cred.user_princ
 
     _message_test(c, s)
 
@@ -807,3 +1006,58 @@ def test_credssp_kerberos_creds(restrict_tlsv12, kerb_cred):
 
     c_winrm_result = c.unwrap_winrm(s_winrm_result.header, s_winrm_result.data)
     assert c_winrm_result == plaintext
+
+
+def test_credssp_multiple_creds(ntlm_cred):
+    creds = [
+        spnego.NTLMHash(username=ntlm_cred[0], nt_hash=ntowfv1(ntlm_cred[1]).hex()),
+        spnego.Password(username="delegate", password="password"),
+    ]
+    c = spnego.client(creds, hostname=socket.gethostname(), protocol='credssp')
+    s = spnego.server(protocol='credssp')
+
+    assert c.client_principal is None
+    assert c.client_credential is None
+    assert c.negotiated_protocol is None
+
+    # The TLS handshake can differ based on the protocol selected, keep on looping until we see the auth_context set up
+    # For NTLM the auth context will be present after the first exchange of NTLM tokens.
+    server_tls_token = None
+    while c._auth_context is None:
+        client_tls_token = c.step(server_tls_token)
+        assert not c.complete
+        assert not s.complete
+
+        server_tls_token = s.step(client_tls_token)
+        assert not c.complete
+        assert not s.complete
+
+    ntlm3_pub_key = c.step(server_tls_token)
+    assert not c.complete
+    assert not s.complete
+
+    server_pub_key = s.step(ntlm3_pub_key)
+    assert not c.complete
+    assert not s.complete
+
+    credential = c.step(server_pub_key)
+    assert c.complete
+    assert not s.complete
+
+    final_token = s.step(credential)
+    assert final_token is None
+    assert c.complete
+    assert s.complete
+
+    assert c.negotiated_protocol == 'ntlm'
+    assert s.negotiated_protocol == 'ntlm'
+
+    # Matches the principal authenticated with the Negotiate phase - NTLMHash
+    assert s.client_principal == ntlm_cred[0]
+
+    # Matches the Password cred passed in, will not use the NTLMHash details as it wasn't enought for CredSSP
+    assert s.client_credential.username == "delegate"
+    assert s.client_credential.domain_name == ""
+    assert s.client_credential.password == "password"
+
+    _message_test(c, s)

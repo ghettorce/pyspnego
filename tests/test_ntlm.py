@@ -10,10 +10,9 @@ import socket
 import pytest
 
 import spnego
-import spnego._gss as gss
 import spnego._ntlm as ntlm
-import spnego._sspi as sspi
 import spnego.channel_bindings
+from spnego._credential import CredentialCache
 from spnego._ntlm_raw.messages import (
     Authenticate,
     AvId,
@@ -63,36 +62,39 @@ def test_get_credential_file(tmpdir, monkeypatch):
     assert actual == to_text(tmp_creds)
 
 
-@pytest.mark.parametrize('line, username, domain, lm_hash, nt_hash, explicit', [
+@pytest.mark.parametrize('line, username, domain, lm_hash, nt_hash, input', [
     ('domain:Username:password', 'username', 'domain',
-     'E52CAC67419A9A224A3B108F3FA6CB6D', '8846F7EAEE8FB117AD06BDD830B7586C', True),
+     'E52CAC67419A9A224A3B108F3FA6CB6D', '8846F7EAEE8FB117AD06BDD830B7586C',
+     CredentialCache(username='domain\\username')),
     ('domain:Username:password\ndomain:other:pass2', 'Username', 'domain',
-     'E52CAC67419A9A224A3B108F3FA6CB6D', '8846F7EAEE8FB117AD06BDD830B7586C', False),
+     'E52CAC67419A9A224A3B108F3FA6CB6D', '8846F7EAEE8FB117AD06BDD830B7586C',
+     None),
     ('fake\ndomain:username:password', 'username', 'domain',  # newline or garbage data  in file won't fail
-     'E52CAC67419A9A224A3B108F3FA6CB6D', '8846F7EAEE8FB117AD06BDD830B7586C', True),
+     'E52CAC67419A9A224A3B108F3FA6CB6D', '8846F7EAEE8FB117AD06BDD830B7586C',
+     CredentialCache('domain\\username')),
     (':username@DOMAIN.COM:password', 'username@DOMAIN.COM', None,
-     'E52CAC67419A9A224A3B108F3FA6CB6D', '8846F7EAEE8FB117AD06BDD830B7586C', True),
+     'E52CAC67419A9A224A3B108F3FA6CB6D', '8846F7EAEE8FB117AD06BDD830B7586C',
+     CredentialCache('username@DOMAIN.COM')),
     ('testuser:1000:278623D830DABE161104594F8C2EF12B:C3C6F4FD8A02A6C1268F1A8074B6E7E0:[U]:LCT-1589398321',
-     'testuser', None, '278623D830DABE161104594F8C2EF12B', 'C3C6F4FD8A02A6C1268F1A8074B6E7E0', True),
+     'testuser', None, '278623D830DABE161104594F8C2EF12B', 'C3C6F4FD8A02A6C1268F1A8074B6E7E0',
+     CredentialCache('testuser')),
     ('TESTDOM\\testuser:1000:4588C64B89437893AAD3B435B51404EE:65202355FA01AEF26B89B19E00F52679:[U]:LCT-1589398321',
-     'testuser', 'testdom', '4588C64B89437893AAD3B435B51404EE', '65202355FA01AEF26B89B19E00F52679', True),
+     'testuser', 'testdom', '4588C64B89437893AAD3B435B51404EE', '65202355FA01AEF26B89B19E00F52679',
+     CredentialCache('testdom\\testuser')),
     ('TESTDOM\\testuser:1000:4588C64B89437893AAD3B435B51404EE:65202355FA01AEF26B89B19E00F52679:[U]:LCT-1589398321',
-     'testuser', 'testdom', '4588C64B89437893AAD3B435B51404EE', '65202355FA01AEF26B89B19E00F52679', True),
+     'testuser', 'testdom', '4588C64B89437893AAD3B435B51404EE', '65202355FA01AEF26B89B19E00F52679',
+     CredentialCache('testdom\\testuser')),
     ('testuser@TESTDOM.COM:1000:00000000000000000000000000000000:8ADB9B997580D69E69CAA2BBB68F4697:[U]:LCT-1589398321',
-     'testuser@testdom.com', None, '00000000000000000000000000000000', '8ADB9B997580D69E69CAA2BBB68F4697', True),
+     'testuser@testdom.com', None, '00000000000000000000000000000000', '8ADB9B997580D69E69CAA2BBB68F4697',
+     CredentialCache('testuser@testdom.com')),
 ])
-def test_get_credential_from_file(line, username, domain, lm_hash, nt_hash, explicit, tmpdir, monkeypatch):
+def test_get_credential_from_file(line, username, domain, lm_hash, nt_hash, input, tmpdir, monkeypatch):
     tmp_creds = os.path.join(to_text(tmpdir), 'pÿspᴞӛgӫ TÈ$''.creds')
     monkeypatch.setenv('NTLM_USER_FILE', tmp_creds)
     with open(tmp_creds, mode='wb') as fd:
         fd.write(to_bytes(line))
 
-    if explicit:
-        actual = ntlm._NTLMCredential(domain, username)
-
-    else:
-        actual = ntlm._NTLMCredential()
-
+    actual = ntlm._NTLMCredential(input)
     assert actual.username == username
     assert actual.domain == domain
     assert actual.lm_hash == base64.b16decode(lm_hash)
@@ -107,7 +109,7 @@ def test_get_credential_from_file_no_matches(tmpdir, monkeypatch):
 
     with pytest.raises(SpnegoError, match="Failed to find any matching credential in NTLM_USER_FILE "
                                           "credential store."):
-        ntlm._NTLMCredential("fake", "username")
+        ntlm._NTLMCredential(CredentialCache("fake\\username"))
 
 
 @pytest.mark.parametrize('level', [-1, 6])
@@ -123,7 +125,7 @@ def test_invalid_lm_compat_level(level, monkeypatch):
 def test_context_no_store(usage):
     with pytest.raises(OperationNotAvailableError, match="Retrieving NTLM store without NTLM_USER_FILE set to a "
                                                          "filepath"):
-        ntlm.NTLMProxy(None, None, usage=usage)
+        ntlm.NTLMProxy(CredentialCache(), usage=usage)
 
 
 def test_iov_available():
