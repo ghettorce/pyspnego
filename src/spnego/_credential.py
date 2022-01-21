@@ -14,8 +14,15 @@ import typing
 from spnego._ntlm_raw.crypto import is_ntlm_hash
 from spnego.exceptions import InvalidCredentialError, NoCredentialError
 
-# FUTURE: Add Anonymous credential class
+@dataclasses.dataclass
+class Anonymous:
+    """Anonymous credential.
+    """
 
+    @property
+    def supported_protocols(self) -> typing.List[str]:
+        """List of protocols the credential can be used for."""
+        return ["ntlm"]
 
 @dataclasses.dataclass
 class Password:
@@ -225,7 +232,7 @@ class KerberosCCache:
 
 Credential = typing.TypeVar(
     "Credential",
-    bound=typing.Union[CredentialCache, KerberosCCache, KerberosKeytab, NTLMHash, Password]
+    bound=typing.Union[CredentialCache, KerberosCCache, KerberosKeytab, NTLMHash, Password, Anonymous]
 )
 
 
@@ -264,13 +271,16 @@ def unify_credentials(
         elif not isinstance(username, list):
             username = [username]
 
+    elif not password:
+        username = [Anonymous()]
+
     else:
         username = [CredentialCache()]
 
     credentials: typing.List[Credential] = []
     used_protocols: typing.Set[str] = set()
     for cred in username:
-        if not isinstance(cred, (CredentialCache, KerberosCCache, KerberosKeytab, NTLMHash, Password)):
+        if not isinstance(cred, (CredentialCache, KerberosCCache, KerberosKeytab, NTLMHash, Password, Anonymous)):
             raise InvalidCredentialError(context_msg="Invalid username/credential specified, must be a string "
                                                      "or Credential object.")
 

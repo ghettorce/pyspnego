@@ -18,7 +18,7 @@ from spnego._context import (
     split_username,
     wrap_system_error,
 )
-from spnego._credential import Credential, CredentialCache, Password, unify_credentials
+from spnego._credential import Credential, CredentialCache, Password, Anonymous, unify_credentials
 from spnego._text import to_text
 from spnego.channel_bindings import GssChannelBindings
 from spnego.exceptions import InvalidCredentialError, NegotiateOptions, SpnegoError
@@ -115,6 +115,14 @@ def _get_sspi_credential(
 
             return acquire_credentials_handle(**credential_kwargs)
 
+        elif isinstance(cred, Anonymous):
+            credential_kwargs['auth_data'] = WinNTAuthIdentity(
+                to_text('', nonstring='passthru'),
+                to_text('', nonstring='passthru'),
+                to_text('', nonstring='passthru'))
+
+            return acquire_credentials_handle(**credential_kwargs)
+
         elif isinstance(cred, CredentialCache):
             return acquire_credentials_handle(**credential_kwargs)
 
@@ -147,6 +155,11 @@ class SSPIProxy(ContextProxy):
             raise ImportError("SSPIProxy requires the SSPI Cython extension to be compiled: %s" % SSPI_IMP_ERR)
 
         credentials = unify_credentials(username, password)
+
+        # FIXME: handle cases where real credentials are mixed with anonymous ones
+        if all(isinstance(cred, Anonymous) for cred in credentials):
+            context_req |= ContextReq.anonymous
+
         super(SSPIProxy, self).__init__(credentials, hostname, service, channel_bindings, context_req, usage, protocol,
                                         options)
 
@@ -301,6 +314,7 @@ class SSPIProxy(ContextProxy):
             (ContextReq.sequence_detect, 'sequence_detect'),
             (ContextReq.confidentiality, 'confidentiality'),
             (ContextReq.integrity, 'integrity'),
+            (ContextReq.anonymous, 'null_session'),
             (ContextReq.identify, 'identify'),
         ]
         attrs = []

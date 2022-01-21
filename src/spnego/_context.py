@@ -117,7 +117,7 @@ class ContextReq(enum.IntFlag):
     sequence_detect = 0x00000008
     confidentiality = 0x00000010
     integrity = 0x00000020
-    # anonymous = 0x00000040  # TODO: Add support for anonymous auth.
+    anonymous = 0x00000040
     identify = 0x00002000
     # Requires newer python-gssapi version to support https://github.com/pythongssapi/python-gssapi/pull/218
     delegate_policy = 0x00080000

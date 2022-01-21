@@ -14,6 +14,7 @@ from spnego._credential import (
     KerberosKeytab,
     NTLMHash,
     Password,
+    Anonymous,
 )
 from spnego.auth import client, server
 from spnego.exceptions import NegotiateOptions

@@ -88,6 +88,7 @@ from spnego._sspi_raw.security cimport (
     ISC_REQ_DELEGATE,
     ISC_REQ_EXTENDED_ERROR,
     ISC_REQ_IDENTIFY,
+    ISC_REQ_NULL_SESSION,
     ISC_REQ_INTEGRITY,
     ISC_REQ_MANUAL_CRED_VALIDATION,
     ISC_REQ_MUTUAL_AUTH,
@@ -241,6 +242,7 @@ class ClientContextReq:
     http = 0x10000000  # ISC_REQ_HTTP
     integrity = ISC_REQ_INTEGRITY
     identify = ISC_REQ_IDENTIFY
+    null_session = ISC_REQ_NULL_SESSION
     manual_cred_validation = ISC_REQ_MANUAL_CRED_VALIDATION
     mutual_auth = ISC_REQ_MUTUAL_AUTH
     no_integrity = ISC_REQ_NO_INTEGRITY

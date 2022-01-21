@@ -22,6 +22,7 @@ from spnego._credential import (
     CredentialCache,
     NTLMHash,
     Password,
+    Anonymous,
     unify_credentials,
 )
 from spnego._ntlm_raw.crypto import (
@@ -198,7 +199,7 @@ class _NTLMCredential:
 
     def __init__(
         self,
-        credential: typing.Optional[typing.Union[CredentialCache, NTLMHash, Password]] = None,
+        credential: typing.Optional[typing.Union[CredentialCache, NTLMHash, Password, Anonymous]] = None,
     ) -> None:
         if isinstance(credential, Password):
             self._store = 'explicit'
@@ -211,6 +212,13 @@ class _NTLMCredential:
             self.domain, self.username = split_username(credential.username)
             self.lm_hash = base64.b16decode(credential.lm_hash.upper()) if credential.lm_hash else b"\x00" * 16
             self.nt_hash = base64.b16decode(credential.nt_hash.upper()) if credential.nt_hash else b"\x00" * 16
+
+        elif isinstance(credential, Anonymous):
+            self._store = 'explicit'
+            self.domain = ''
+            self.username = ''
+            self.lm_hash = lmowfv1('')
+            self.nt_hash = ntowfv1('')
 
         else:
             domain = username = None
@@ -397,7 +405,13 @@ class NTLMProxy(ContextProxy):
         else:
             self._session_key = key_exchange_key
 
-        authenticate = Authenticate(challenge.flags, lm_challenge, nt_challenge, **auth_kwargs)
+        authenticate_flags = challenge.flags
+
+        # Special case for anonymous authentication, flags are optional for Windows, but why not?
+        if not self._credential.username:
+            authenticate_flags = NegotiateFlags.anonymous | (authenticate_flags & ~NegotiateFlags.target_type_domain)
+
+        authenticate = Authenticate(authenticate_flags, lm_challenge, nt_challenge, **auth_kwargs)
 
         if self._mic_required:
             authenticate.mic = self._calculate_mic(self._temp_msg['negotiate'].pack(), in_token, authenticate.pack())
@@ -670,6 +684,12 @@ class NTLMProxy(ContextProxy):
 
             if self._mic_required:
                 lm_challenge = b"\x00" * 24
+
+            # Special case for anonymous authentication
+            if not credential.username:
+                nt_challenge = b""
+                lm_challenge = b""
+                key_exchange_key = b"\x00" * 16
 
             return nt_challenge, lm_challenge, key_exchange_key
 
